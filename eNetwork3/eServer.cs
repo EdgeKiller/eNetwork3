@@ -35,11 +35,22 @@ namespace eNetwork3
         public eServer(int port, int bufferSize = 1024)
         {
             this.port = port;
+
             BufferSize = bufferSize;
-            clients = new List<Socket>();
-            serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             buffer = new byte[BufferSize];
-            serverSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+
+            clients = new List<Socket>();
+
+            serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+            try
+            {
+                serverSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+            }
+            catch(Exception ex)
+            {
+                DebugMessage("Failed to bind the server, more info : " + ex.Message, 1);
+            }
         }
 
         /// <summary>
@@ -50,7 +61,7 @@ namespace eNetwork3
             serverSocket.Listen(Backlog);
             Accept();
         }
-        
+
         /// <summary>
         /// Stop the server
         /// </summary>
@@ -75,7 +86,7 @@ namespace eNetwork3
         /// <param name="buffer"></param>
         public void SendToAll(byte[] buffer)
         {
-            foreach(Socket c in clients)
+            foreach (Socket c in clients)
             {
                 serverSocket.SendTo(buffer, c.RemoteEndPoint);
             }
@@ -90,7 +101,7 @@ namespace eNetwork3
         {
             foreach (Socket c in clients)
             {
-                if(c != exceptedClient)
+                if (c != exceptedClient)
                     serverSocket.SendTo(buffer, c.RemoteEndPoint);
             }
         }
@@ -153,18 +164,21 @@ namespace eNetwork3
                 try
                 {
                     int bufferSize = clientSocket.EndReceive(result);
-                    byte[] packet = new byte[bufferSize];
-                    Array.Copy(buffer, packet, packet.Length);
+                    if (bufferSize > 0)
+                    {
+                        byte[] packet = new byte[bufferSize];
+                        Array.Copy(buffer, packet, packet.Length);
 
-                    if (OnDataReceived != null)
-                        OnDataReceived.Invoke(clientSocket, packet);
+                        if (OnDataReceived != null)
+                            OnDataReceived.Invoke(clientSocket, packet);
 
-                    buffer = new byte[BufferSize];
-                    clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, clientSocket);
+                        buffer = new byte[BufferSize];
+                        clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, clientSocket);
+                    }
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
-                    if(ex.HResult == -2147467259 && ex is SocketException)
+                    if (ex.HResult == -2147467259 && ex is SocketException)
                     {
                         DebugMessage("Client disconnected : " + clientSocket.RemoteEndPoint.ToString(), 1);
                         if (clients.Contains(clientSocket))

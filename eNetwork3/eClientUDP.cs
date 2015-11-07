@@ -18,6 +18,8 @@ namespace eNetwork3
         //Events
         public delegate void DataReceivedHandler(byte[] buffer);
         public event DataReceivedHandler OnDataReceived;
+        public delegate void ConnectionHandler();
+        public event ConnectionHandler OnConnected;
 
         //Parameters
         public int DebugLevel { get; set; } = 0;
@@ -43,8 +45,7 @@ namespace eNetwork3
         /// </summary>
         public void Connect()
         {
-            clientSocket.Connect(serverEndPoint);
-            clientSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref serverEndPoint, ReceivedCallback, null);
+            clientSocket.BeginConnect(serverEndPoint, ConnectCallback, null);
         }
 
         /// <summary>
@@ -75,6 +76,26 @@ namespace eNetwork3
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[Debug] " + message);
                 Console.ResetColor();
+            }
+        }
+
+        /// <summary>
+        /// Connect callback
+        /// </summary>
+        /// <param name="ar"></param>
+        void ConnectCallback(IAsyncResult ar)
+        {
+            if (clientSocket.Connected)
+            {
+                DebugMessage("Connected to the server !", 1);
+                if (OnConnected != null)
+                    OnConnected.Invoke();
+                buffer = new byte[BufferSize];
+                clientSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref serverEndPoint, ReceivedCallback, null);
+            }
+            else
+            {
+                DebugMessage("Could not connect.", 1);
             }
         }
 
