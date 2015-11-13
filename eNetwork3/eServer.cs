@@ -1,202 +1,221 @@
-﻿using System;
+﻿using eNetwork3.Utils;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace eNetwork3
 {
     public class eServer
     {
-        //Server
-        Socket serverSocket;
-        byte[] buffer;
         int port;
 
-        //Clients
-        public List<Socket> Clients { get { return clients; } }
-        List<Socket> clients;
+        TcpListener listener;
 
-        //Events
-        public delegate void DataReceivedHandler(Socket client, byte[] buffer);
+        List<Task> taskList;
+
+        List<TcpClient> clientList;
+
+        public delegate void DataReceivedHandler(TcpClient client, byte[] buffer);
         public event DataReceivedHandler OnDataReceived;
-        public delegate void ConnectionHandler(Socket client);
+
+        public delegate void ConnectionHandler(TcpClient client);
         public event ConnectionHandler OnClientConnected, OnClientDisconnected;
 
-        //Parameters
-        public int DebugLevel { get; set; } = 0;
-        public bool Connected { get { return serverSocket.Connected; } }
-        public int BufferSize { get; set; }
-        public int Backlog { get; set; }
+        public int DebugLevel { get; set; }
 
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="port"></param>
-        public eServer(int port, int bufferSize = 1024)
+        public bool Connected { get { return listener.Server.Connected; } }
+
+        public int SendBufferSize { get { return listener.Server.SendBufferSize; } set { listener.Server.SendBufferSize = value; } }
+        public int ReceiveBufferSize { get { return listener.Server.ReceiveBufferSize; } set { listener.Server.ReceiveBufferSize = value; } }
+
+        public eServer(int port)
         {
+            DebugLevel = 0;
+
             this.port = port;
 
-            BufferSize = bufferSize;
-            buffer = new byte[BufferSize];
+            listener = new TcpListener(IPAddress.Loopback, port);
 
-            clients = new List<Socket>();
+            taskList = new List<Task>();
 
-            serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            clientList = new List<TcpClient>();
+        }
 
+        public bool Start()
+        {
             try
             {
-                serverSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+                //Start listen for client
+                listener.Start();
+                StartListen();
+
+                Logger.Log("Server started on " + IPAddress.Loopback + ":" + port, DebugLevel);
+
+                return true;
+
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
-                DebugMessage("Failed to bind the server, more info : " + ex.Message, 1);
+                Logger.Error("Failed to start the server : " + ex.Message, DebugLevel);
+
+                Stop();
+
+                return false;
             }
         }
 
-        /// <summary>
-        /// Start the server
-        /// </summary>
-        public void Start()
+        public bool Stop()
         {
-            serverSocket.Listen(Backlog);
-            Accept();
-        }
-
-        /// <summary>
-        /// Stop the server
-        /// </summary>
-        public void Stop()
-        {
-            serverSocket.Shutdown(SocketShutdown.Both);
-        }
-
-        /// <summary>
-        /// Send to specify client
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="buffer"></param>
-        public void SendTo(Socket client, byte[] buffer)
-        {
-            serverSocket.SendTo(buffer, client.RemoteEndPoint);
-        }
-
-        /// <summary>
-        /// Send to all clients
-        /// </summary>
-        /// <param name="buffer"></param>
-        public void SendToAll(byte[] buffer)
-        {
-            foreach (Socket c in clients)
+            try
             {
-                serverSocket.SendTo(buffer, c.RemoteEndPoint);
-            }
-        }
+                taskList.Clear();
+                clientList.Clear();
 
-        /// <summary>
-        /// Send to all except one client
-        /// </summary>
-        /// <param name="exceptedClient"></param>
-        /// <param name="buffer"></param>
-        public void SendToAllExcept(Socket exceptedClient, byte[] buffer)
-        {
-            foreach (Socket c in clients)
+                //Stop listen for client
+                if (listener.Server.Connected)
+                    listener.Stop();
+
+                Logger.Log("Server stopped successfully.", DebugLevel);
+
+                return true;
+            }
+            catch (Exception ex)
             {
-                if (c != exceptedClient)
-                    serverSocket.SendTo(buffer, c.RemoteEndPoint);
+                Logger.Error("Failed to stop the server : " + ex.Message, DebugLevel);
+
+                return false;
             }
         }
 
-        /// <summary>
-        /// Show debug message on console
-        /// </summary>
-        /// <param name="message"></param>
-        /// <param name="level"></param>
-        void DebugMessage(object message, int level)
+        public bool SendTo(byte[] buffer, TcpClient client)
         {
-            if (DebugLevel >= level)
+            try
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[Debug] " + message);
-                Console.ResetColor();
+                client.Send(buffer);
+
+                Logger.Debug("Buffer sent successfully.", DebugLevel);
+
+                return true;
             }
-        }
-
-        /// <summary>
-        /// Accept
-        /// </summary>
-        void Accept()
-        {
-            serverSocket.BeginAccept(AcceptedCallback, null);
-        }
-
-        /// <summary>
-        /// AcceptedCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void AcceptedCallback(IAsyncResult result)
-        {
-            Socket clientSocket = serverSocket.EndAccept(result);
-            if (clientSocket != null && clientSocket.Connected)
+            catch (Exception ex)
             {
-                DebugMessage("New client connected : " + clientSocket.RemoteEndPoint.ToString(), 1);
-                if (OnClientConnected != null)
-                    OnClientConnected.Invoke(clientSocket);
-                clients.Add(clientSocket);
-                buffer = new byte[BufferSize];
-                clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, clientSocket);
+                Logger.Error("Failed to send buffer : " + ex.Message, DebugLevel);
+                return false;
             }
-            else
-            {
-                DebugMessage("Problem with connection of client : " + clientSocket.RemoteEndPoint.ToString(), 2);
-            }
-            Accept();
         }
 
-        /// <summary>
-        /// ReceivedCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void ReceivedCallback(IAsyncResult result)
+        public bool SendToAll(byte[] buffer)
         {
-            Socket clientSocket = result.AsyncState as Socket;
-            if (clientSocket != null && clientSocket.Connected)
+            foreach (TcpClient client in clientList)
             {
                 try
                 {
-                    int bufferSize = clientSocket.EndReceive(result);
-                    if (bufferSize > 0)
-                    {
-                        byte[] packet = new byte[bufferSize];
-                        Array.Copy(buffer, packet, packet.Length);
-
-                        if (OnDataReceived != null)
-                            OnDataReceived.Invoke(clientSocket, packet);
-
-                        buffer = new byte[BufferSize];
-                        clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, clientSocket);
-                    }
+                    client.Send(buffer);
+                    Logger.Debug("Buffer sent successfully to this client : " + client.Client.RemoteEndPoint.ToString(), DebugLevel);
                 }
                 catch (Exception ex)
                 {
-                    if (ex.HResult == -2147467259 && ex is SocketException)
+                    Logger.Error("Failed to send buffer to this client : " + client.Client.RemoteEndPoint.ToString() + " More info : " + ex.Message, DebugLevel);
+                }
+            }
+            return true;
+        }
+
+        public bool SendToAll(byte[] buffer, TcpClient exceptedClient)
+        {
+            foreach (TcpClient client in clientList)
+            {
+                if (client != exceptedClient)
+                {
+                    try
                     {
-                        DebugMessage("Client disconnected : " + clientSocket.RemoteEndPoint.ToString(), 1);
-                        if (clients.Contains(clientSocket))
-                            clients.Remove(clientSocket);
+                        client.Send(buffer);
+                        Logger.Debug("Buffer sent successfully to this client : " + client.Client.RemoteEndPoint.ToString(), DebugLevel);
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        DebugMessage("Error when receiving data from : " + clientSocket.RemoteEndPoint.ToString(), 2);
+                        Logger.Error("Failed to send buffer to this client : " + client.Client.RemoteEndPoint.ToString() + " More info : " + ex.Message, DebugLevel);
                     }
                 }
             }
-            else
+            return true;
+        }
+
+        public List<TcpClient> GetClientList()
+        {
+            return clientList;
+        }
+
+        void StartListen()
+        {
+            taskList.Add(ListenAsync());
+        }
+
+        async Task ListenAsync()
+        {
+            try
             {
-                DebugMessage("Client disconnected : " + clientSocket.RemoteEndPoint.ToString(), 1);
+                while (true)
+                {
+                    TcpClient client = await listener.AcceptTcpClientAsync();
+
+                    clientList.Add(client);
+
+                    if (OnClientConnected != null)
+                        OnClientConnected(client);
+
+                    StartHandleClient(client);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to listen for new client : " + ex.Message, DebugLevel);
+            }
+            finally
+            {
+                Stop();
+            }
+        }
+
+        void StartHandleClient(TcpClient client)
+        {
+            taskList.Add(HandleClientAsync(client));
+        }
+
+        async Task HandleClientAsync(TcpClient client)
+        {
+            byte[] buffer = new byte[ReceiveBufferSize];
+            byte[] result;
+
+            try
+            {
+                while (client.Client.Connected)
+                {
+                    int size = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
+
+                    if (size == 0)
+                        break;
+
+                    result = new byte[size];
+
+                    Array.Copy(buffer, result, result.Length);
+
+                    if (OnDataReceived != null)
+                        OnDataReceived(client, result);
+                }
+            }
+            catch (Exception ex)
+            {
+                if(ex.HResult != -2146232800)
+                    Logger.Error("Failed to handle client : " + client.Client.RemoteEndPoint.ToString() + " More info : " + ex.Message, DebugLevel);
+            }
+            finally
+            {
+                clientList.Remove(client);
                 if (OnClientDisconnected != null)
-                    OnClientDisconnected.Invoke(clientSocket);
-                if (clients.Contains(clientSocket))
-                    clients.Remove(clientSocket);
+                    OnClientDisconnected(client);
             }
         }
     }

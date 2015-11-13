@@ -1,125 +1,137 @@
 ﻿using System;
-using System.Net;
+using System.Collections.Generic;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace eNetwork3
 {
     public class eClientUDP
     {
-        //Client
-        Socket clientSocket;
-        byte[] buffer;
-
-        //Server
-        string ipAddress;
+        string hostName;
         int port;
-        EndPoint serverEndPoint;
 
-        //Events
+        List<Task> taskList;
+
+        UdpClient client;
+
         public delegate void DataReceivedHandler(byte[] buffer);
         public event DataReceivedHandler OnDataReceived;
+
         public delegate void ConnectionHandler();
-        public event ConnectionHandler OnConnected;
+        public event ConnectionHandler OnConnected, OnDisconnected;
 
-        //Parameters
-        public int DebugLevel { get; set; } = 0;
-        public int BufferSize { get; set; }
+        public int DebugLevel { get; set; }
 
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="ipAddress"></param>
-        /// <param name="port"></param>
-        public eClientUDP(string ipAddress, int port, int bufferSize = 1024)
+        public bool Connected { get { return client.Client.Connected; } }
+
+        public int SendBufferSize { get { return client.Client.SendBufferSize; } set { client.Client.SendBufferSize = value; } }
+        public int ReceiveBufferSize { get { return client.Client.ReceiveBufferSize; } set { client.Client.ReceiveBufferSize = value; } }
+
+        public eClientUDP(string hostName, int port)
         {
-            this.ipAddress = ipAddress;
+            DebugLevel = 0;
+
+            this.hostName = hostName;
             this.port = port;
-            BufferSize = bufferSize;
-            serverEndPoint = new IPEndPoint(IPAddress.Parse(ipAddress), port) as EndPoint;
-            clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            buffer = new byte[BufferSize];
+
+            client = new UdpClient();
+
+            taskList = new List<Task>();
         }
 
-        /// <summary>
-        /// Connect to server
-        /// </summary>
-        public void Connect()
-        {
-            clientSocket.BeginConnect(serverEndPoint, ConnectCallback, null);
-        }
-
-        /// <summary>
-        /// Disconnect from server
-        /// </summary>
-        public void Disconnect()
-        {
-            clientSocket.Disconnect(true);
-        }
-
-        /// <summary>
-        /// Send to the server
-        /// </summary>
-        /// <param name="buffer"></param>
-        public void Send(byte[] buffer)
-        {
-            clientSocket.SendTo(buffer, 0, buffer.Length, SocketFlags.None, serverEndPoint);
-        }
-
-        /// <summary>
-        /// Show debug message on console
-        /// </summary>
-        /// <param name="message"></param>
-        void DebugMessage(object message, int level)
-        {
-            if (DebugLevel >= level)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[Debug] " + message);
-                Console.ResetColor();
-            }
-        }
-
-        /// <summary>
-        /// Connect callback
-        /// </summary>
-        /// <param name="ar"></param>
-        void ConnectCallback(IAsyncResult ar)
-        {
-            if (clientSocket.Connected)
-            {
-                DebugMessage("Connected to the server !", 1);
-                if (OnConnected != null)
-                    OnConnected.Invoke();
-                buffer = new byte[BufferSize];
-                clientSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref serverEndPoint, ReceivedCallback, null);
-            }
-            else
-            {
-                DebugMessage("Could not connect.", 1);
-            }
-        }
-
-        /// <summary>
-        /// ReceivedCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void ReceivedCallback(IAsyncResult result)
+        public bool Connect()
         {
             try
             {
-                int bufferSize = clientSocket.EndReceiveFrom(result, ref serverEndPoint);
-                byte[] packet = new byte[bufferSize];
-                Array.Copy(buffer, packet, packet.Length);
-                if (OnDataReceived != null)
-                    OnDataReceived.Invoke(packet);
-                buffer = new byte[BufferSize];
-                clientSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref serverEndPoint, ReceivedCallback, null);
+                //Connect the TcpClient
+                client.Connect(hostName, port);
+
+                //Invoke the event
+                if (OnConnected != null)
+                    OnConnected.Invoke();
+
+                Logger.Log("Connected successfully to " + hostName + ":" + port, DebugLevel);
+
+                StartHandle();
+
+                return true;
             }
             catch (Exception ex)
             {
-                DebugMessage("Error when receiving data : " + ex.GetType(), 2);
+                Logger.Error("Failed to connect : " + ex.Message, DebugLevel);
+
+                Disconnect(); //To be sure the TcpClient is disconnected
+
+                return false;
+            }
+        }
+
+        public bool Disconnect()
+        {
+            if (Connected)
+            {
+                try
+                {
+                    //Disconnect the TcpClient
+                    client.Close();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Failed to disconnect : " + ex.Message, DebugLevel);
+
+                    return false;
+                }
             }
 
+            //Invoke the event
+            if (OnDisconnected != null)
+                OnDisconnected.Invoke();
+
+            return true;
+        }
+
+        public bool Send(byte[] buffer)
+        {
+            try
+            {
+                client.Send(buffer, buffer.Length, hostName, port);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to send buffer : " + ex.Message, DebugLevel);
+
+                return false;
+            }
+        }
+
+        void StartHandle()
+        {
+            taskList.Add(HandleAsync());
+        }
+
+        async Task HandleAsync()
+        {
+            try
+            {
+                while (Connected)
+                {
+                    UdpReceiveResult result = await client.ReceiveAsync();
+
+                    if (OnDataReceived != null)
+                        OnDataReceived.Invoke(result.Buffer);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex.HResult != -2146232800) //Server closed
+                    Logger.Error("Failed to receive buffer : " + ex.Message, DebugLevel);
+            }
+            finally
+            {
+                Disconnect();
+            }
         }
     }
 }

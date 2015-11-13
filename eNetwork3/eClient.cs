@@ -1,139 +1,149 @@
-﻿using System;
-using System.Net;
+﻿using eNetwork3.Utils;
+using System;
+using System.Collections.Generic;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace eNetwork3
 {
     public class eClient
     {
-        //Client
-        Socket clientSocket;
-        byte[] buffer;
-
-        //Server
-        string ipAddress;
+        string hostName;
         int port;
 
-        //Events
+        List<Task> taskList;
+
+        TcpClient client;
+
         public delegate void DataReceivedHandler(byte[] buffer);
         public event DataReceivedHandler OnDataReceived;
+
         public delegate void ConnectionHandler();
         public event ConnectionHandler OnConnected, OnDisconnected;
 
-        //Parameters
-        public int DebugLevel { get; set; } = 0;
-        public bool Connected { get { return clientSocket.Connected; } }
-        public int BufferSize { get; set; }
+        public int DebugLevel { get; set; }
 
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="ipAddress"></param>
-        /// <param name="port"></param>
-        public eClient(string ipAddress, int port, int bufferSize = 1024)
+        public bool Connected { get { return client.Connected; } }
+
+        public int SendBufferSize { get { return client.SendBufferSize; } set { client.SendBufferSize = value; } }
+        public int ReceiveBufferSize { get { return client.ReceiveBufferSize; } set { client.ReceiveBufferSize = value; } }
+
+        public eClient(string hostName, int port)
         {
-            this.ipAddress = ipAddress;
+            DebugLevel = 0;
+
+            this.hostName = hostName;
             this.port = port;
-            clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            buffer = new byte[BufferSize];
+
+            client = new TcpClient();
+
+            taskList = new List<Task>();
         }
 
-        /// <summary>
-        /// Connect to the server
-        /// </summary>
-        public void Connect()
+        public bool Connect()
         {
-            clientSocket.BeginConnect(new IPEndPoint(IPAddress.Parse(ipAddress), port), ConnectCallback, null);
-        }
-
-        /// <summary>
-        /// Disconnect from the server
-        /// </summary>
-        public void Disconnect()
-        {
-            clientSocket.Shutdown(SocketShutdown.Both);
-        }
-
-        /// <summary>
-        /// Send to the server
-        /// </summary>
-        /// <param name="buffer"></param>
-        public void Send(byte[] buffer)
-        {
-            clientSocket.Send(buffer);
-        }
-
-        /// <summary>
-        /// Show debug message on console
-        /// </summary>
-        /// <param name="message"></param>
-        /// <param name="level"></param>
-        void DebugMessage(object message, int level)
-        {
-            if (DebugLevel >= level)
+            try
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[Debug] " + message);
-                Console.ResetColor();
-            }
-        }
+                //Connect the TcpClient
+                client.Connect(hostName, port);
 
-        /// <summary>
-        /// ConnectCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void ConnectCallback(IAsyncResult result)
-        {
-            if (clientSocket.Connected)
-            {
-                DebugMessage("Connected to the server !", 1);
+                //Invoke the event
                 if (OnConnected != null)
                     OnConnected.Invoke();
-                buffer = new byte[BufferSize];
-                clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, null);
+
+                Logger.Log("Connected successfully to " + hostName + ":" + port, DebugLevel);
+
+                StartHandle();
+
+                return true;
             }
-            else
+            catch (Exception ex)
             {
-                DebugMessage("Could not connect.", 1);
+                Logger.Error("Failed to connect : " + ex.Message, DebugLevel);
+
+                Disconnect(); //To be sure the TcpClient is disconnected
+
+                return false;
             }
         }
 
-        /// <summary>
-        /// ReceivedCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void ReceivedCallback(IAsyncResult result)
+        public bool Disconnect()
         {
-            if (clientSocket.Connected)
+            if (Connected)
             {
                 try
                 {
-                    int bufferSize = clientSocket.EndReceive(result);
-                    byte[] packet = new byte[bufferSize];
-                    Array.Copy(buffer, packet, packet.Length);
-                    if (OnDataReceived != null)
-                        OnDataReceived.Invoke(packet);
-                    buffer = new byte[BufferSize];
-                    clientSocket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, ReceivedCallback, null);
+                    //Disconnect the TcpClient
+                    client.Close();
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
-                    if (ex.HResult == -2147467259 && ex is SocketException)
-                        DebugMessage("Server closed, client disconnected !", 1);
-                    else
-                        DebugMessage("Error when receiving data : " + ex.GetType(), 2);
+                    Logger.Error("Failed to disconnect : " + ex.Message, DebugLevel);
+
+                    return false;
                 }
             }
-            else
-                DebugMessage("Client disconnected.", 1);
-            
-            if (!clientSocket.Connected)
+
+            //Invoke the event
+            if (OnDisconnected != null)
+                OnDisconnected.Invoke();
+
+            return true;
+        }
+
+        public bool Send(byte[] buffer)
+        {
+            try
             {
-                if (OnDisconnected != null)
-                    OnDisconnected.Invoke();
+                client.Send(buffer);
+
+                return true;
             }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to send buffer : " + ex.Message, DebugLevel);
 
+                return false;
+            }
+        }
 
+        void StartHandle()
+        {
+            taskList.Add(HandleAsync());
+        }
+
+        async Task HandleAsync()
+        {
+            byte[] buffer = new byte[client.ReceiveBufferSize];
+            byte[] result;
+
+            try
+            {
+                while (Connected)
+                {
+
+                    int size = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
+
+                    if (size == 0)
+                        break;
+
+                    result = new byte[size];
+                    Array.Copy(buffer, result, result.Length);
+
+                    if (OnDataReceived != null)
+                        OnDataReceived.Invoke(result);
+
+                }
+            }
+            catch (Exception ex)
+            {
+                if(ex.HResult != -2146232800) //Server closed
+                    Logger.Error("Failed to receive buffer : " + ex.Message, DebugLevel);
+            }
+            finally
+            {
+                Disconnect();
+            }
         }
     }
 }

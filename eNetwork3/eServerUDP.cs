@@ -1,107 +1,121 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace eNetwork3
 {
     public class eServerUDP
     {
-        //Server
-        Socket serverSocket;
-        byte[] buffer;
         int port;
-        EndPoint endPoint;
 
-        //Events
-        public delegate void DataReceivedHandler(EndPoint endPoint, byte[] buffer);
+        UdpClient listener;
+
+        List<Task> taskList;
+
+        public delegate void DataReceivedHandler(IPEndPoint endPoint, byte[] buffer);
         public event DataReceivedHandler OnDataReceived;
 
-        //Parameters
-        public int DebugLevel { get; set; } = 0;
-        public bool Connected { get { return serverSocket.Connected; } }
-        public int BufferSize { get; set; }
-        public int Backlog { get; set; }
+        public int DebugLevel { get; set; }
 
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="port"></param>
-        public eServerUDP(int port, int bufferSize = 1024)
+        public bool Connected { get { return listener.Client.Connected; } }
+
+        public int SendBufferSize { get { return listener.Client.SendBufferSize; } set { listener.Client.SendBufferSize = value; } }
+        public int ReceiveBufferSize { get { return listener.Client.ReceiveBufferSize; } set { listener.Client.ReceiveBufferSize = value; } }
+
+        public eServerUDP(int port)
         {
+            DebugLevel = 0;
+
             this.port = port;
-            BufferSize = bufferSize;
-            endPoint = new IPEndPoint(IPAddress.Any, port) as EndPoint;
-            serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            buffer = new byte[BufferSize];
-            serverSocket.Bind(endPoint);
+
+            listener = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+
+            taskList = new List<Task>();
         }
 
-        /// <summary>
-        /// Start the server
-        /// </summary>
-        public void Start()
+        public bool Start()
         {
-            DebugMessage("Server started on port : " + port, 1);
-            serverSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref endPoint, ReceivedCallback, endPoint);
-        }
-
-        /// <summary>
-        /// Stop the server
-        /// </summary>
-        public void Stop()
-        {
-            serverSocket.Shutdown(SocketShutdown.Both);
-        }
-
-        /// <summary>
-        /// Send to specify client
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="buffer"></param>
-        public void SendTo(EndPoint endPoint, byte[] buffer)
-        {
-            serverSocket.SendTo(buffer, endPoint);
-        }
-
-        /// <summary>
-        /// Show debug message on console
-        /// </summary>
-        /// <param name="message"></param>
-        /// <param name="level"></param>
-        void DebugMessage(object message, int level)
-        {
-            if (DebugLevel >= level)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[Debug] " + message);
-                Console.ResetColor();
-            }
-        }
-
-        /// <summary>
-        /// ReceivedCallback
-        /// </summary>
-        /// <param name="result"></param>
-        void ReceivedCallback(IAsyncResult result)
-        {
-            EndPoint localEndPoint = result.AsyncState as EndPoint;
             try
             {
-                int bufferSize = serverSocket.EndReceiveFrom(result, ref localEndPoint);
-                byte[] packet = new byte[bufferSize];
-                Array.Copy(buffer, packet, packet.Length);
+                //Start listen
+                StartListen();
 
-                if (OnDataReceived != null)
-                    OnDataReceived.Invoke(localEndPoint, packet);
+                Logger.Log("Server started on " + IPAddress.Loopback + ":" + port, DebugLevel);
 
-                buffer = new byte[BufferSize];
-                endPoint = new IPEndPoint(IPAddress.Any, port);
-                serverSocket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref endPoint, ReceivedCallback, endPoint);
+                return true;
+
             }
-            catch
+            catch (Exception ex)
             {
-                DebugMessage("Error when receiving data from : " + localEndPoint.ToString(), 2);
+                Logger.Error("Failed to start the server : " + ex.Message, DebugLevel);
+
+                Stop();
+
+                return false;
             }
         }
+
+        public bool Stop()
+        {
+            try
+            {
+                taskList.Clear();
+
+                Logger.Log("Server stopped successfully.", DebugLevel);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to stop the server : " + ex.Message, DebugLevel);
+
+                return false;
+            }
+        }
+
+        public bool SendTo(byte[] buffer, IPEndPoint endPoint)
+        {
+            try
+            {
+                listener.Send(buffer, buffer.Length, endPoint);
+
+                Logger.Debug("Buffer sent successfully.", DebugLevel);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to send buffer : " + ex.Message, DebugLevel);
+                return false;
+            }
+        }
+
+        void StartListen()
+        {
+            taskList.Add(ListenAsync());
+        }
+
+        async Task ListenAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, port);
+                    UdpReceiveResult result = await listener.ReceiveAsync();
+
+                    if (OnDataReceived != null)
+                        OnDataReceived(result.RemoteEndPoint, result.Buffer);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to handle receiver. More info : " + ex.Message, DebugLevel);
+            }
+        }
+
+
     }
 }

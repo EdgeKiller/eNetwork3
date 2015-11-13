@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.IO.Compression;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 
 namespace eNetwork3.Utils
@@ -89,6 +90,16 @@ namespace eNetwork3.Utils
                 }
                 return ms.ToArray();
             }
+        }
+
+        /// <summary>
+        /// Extension of TcpClient
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="buffer"></param>
+        public static void Send(this TcpClient client, byte[] buffer)
+        {
+            client.GetStream().Write(buffer, 0, buffer.Length);
         }
     }
 }
